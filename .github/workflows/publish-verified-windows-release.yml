@@ -1,0 +1,95 @@
+name: Publish verified Smart Control installer
+on:
+  workflow_dispatch:
+    inputs:
+      full_url:
+        description: Short-lived GitHub CDN URL for the verified full installer
+        required: true
+        type: string
+      update_url:
+        description: Short-lived GitHub CDN URL for the verified client update
+        required: true
+        type: string
+      validation_base64:
+        description: Base64 encoded successful private Windows acceptance report
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: publish-smart-control-2.0.16
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FULL_URL: ${{ inputs.full_url }}
+      UPDATE_URL: ${{ inputs.update_url }}
+      VALIDATION_INPUT: ${{ inputs.validation_base64 }}
+    steps:
+      - name: Verify approved artifacts and publish stable release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          Write-Output ('::add-mask::'+$env:FULL_URL)
+          Write-Output ('::add-mask::'+$env:UPDATE_URL)
+          $out=Join-Path $env:RUNNER_TEMP 'smart-control-public'
+          New-Item -ItemType Directory $out|Out-Null
+          $bytes=[Convert]::FromBase64String($env:VALIDATION_INPUT)
+          $v=[Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xfeff)|ConvertFrom-Json
+          if($v.Version-ne'2.0.16'-or$v.SourceCommit-ne'6a73c2cf2e650f2946f3d5de60367471e1b139b3'-or$v.WindowsInstallation-ne'PASS_CLEAN_INSTALL_SQL_SHORTCUTS_EULA_LAUNCH_REPAIR_UNINSTALL_PRESERVATION'){throw 'A successful exact-source Windows acceptance report is required.'}
+          foreach($entry in @(@($env:FULL_URL,'Setup.exe',$v.InstallerSha256),@($env:UPDATE_URL,'ClientUpdate.exe',$v.ClientUpdateSha256))){
+            $uri=[Uri]$entry[0]
+            if($uri.Scheme-ne'https'-or$uri.Host-notin@('release-assets.githubusercontent.com','objects.githubusercontent.com')-or!$uri.AbsolutePath.StartsWith('/github-production-release-asset/')){throw 'Only a signed GitHub artifact CDN URL is accepted.'}
+            if($entry[2]-notmatch'^[a-fA-F0-9]{64}$'){throw 'Invalid approved SHA256.'}
+            $file=Join-Path $out $entry[1]
+            Invoke-WebRequest -Uri $uri -OutFile $file -MaximumRedirection 0 -TimeoutSec 1200
+            if((Get-FileHash $file).Hash-ne$entry[2]){throw ('Downloaded artifact hash mismatch: '+$entry[1])}
+          }
+          if((Get-Item (Join-Path $out 'Setup.exe')).Length-ne$v.InstallerBytes){throw 'Full installer size mismatch.'}
+          $v.PublicPublication='PUBLISHED_GITHUB_PUBLIC_STABLE_RELEASE'
+          $v|Add-Member -NotePropertyName PublicRepository -NotePropertyValue $env:GITHUB_REPOSITORY -Force
+          $v|ConvertTo-Json -Depth 10|Set-Content (Join-Path $out 'VALIDATION.json') -Encoding utf8
+          @('Setup.exe','ClientUpdate.exe')|ForEach-Object {((Get-FileHash (Join-Path $out $_)).Hash.ToLowerInvariant()+'  '+$_)}|Set-Content (Join-Path $out 'SHA256SUMS.txt') -Encoding ascii
+          $notes=@"
+          Fresh USA Smart Control 2.0.16 for Windows x64.
+
+          **Setup.exe** is the complete offline installer for a new computer, including the dedicated SQL Server 2022 Express components and mapped USB driver. **ClientUpdate.exe** updates an existing Smart Control installation while preserving its database, settings and license.
+
+          The installed application files are the exact hardware-tested build. Real F-02, F-920, F-950 and Square Terminal S149 workflows were verified. Clean Windows installation, SQL setup, EULA consent, desktop/Start-menu shortcuts, launch, repair and preservation during uninstall passed.
+
+          A separate Smart Control license is required. Square account authorization and terminal pairing are configured inside Smart Control.
+
+          SHA-256 checksums are in SHA256SUMS.txt. Installer Authenticode status: $($v.Signature).
+
+          Application source commit: $($v.SourceCommit).
+          "@
+          $notesFile=Join-Path $out 'RELEASE-NOTES.md';$notes|Set-Content $notesFile -Encoding utf8
+          $tag='v2.0.16'
+          $releases=gh api ('repos/'+$env:GITHUB_REPOSITORY+'/releases?per_page=100')|ConvertFrom-Json
+          if($LASTEXITCODE){throw 'Cannot inspect existing releases.'}
+          $existing=@($releases|Where-Object tag_name -eq $tag)
+          if($existing.Count){
+            if($existing.Count-ne1-or!$existing[0].draft-or$existing[0].body-notlike('*'+$v.SourceCommit+'*')){throw 'Published versions or unrelated drafts are immutable.'}
+          }else{
+            gh release create $tag --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --draft --title 'Fresh USA Smart Control 2.0.16' --notes-file $notesFile
+            if($LASTEXITCODE){throw 'Public release preparation failed.'}
+          }
+          gh release upload $tag --repo $env:GITHUB_REPOSITORY --clobber (Join-Path $out 'Setup.exe') (Join-Path $out 'ClientUpdate.exe') (Join-Path $out 'SHA256SUMS.txt') (Join-Path $out 'VALIDATION.json')
+          if($LASTEXITCODE){throw 'Artifact upload failed; draft remains unpublished.'}
+          $release=@((gh api ('repos/'+$env:GITHUB_REPOSITORY+'/releases?per_page=100')|ConvertFrom-Json)|Where-Object tag_name -eq $tag)[0]
+          foreach($entry in @(@('Setup.exe',$v.InstallerSha256),@('ClientUpdate.exe',$v.ClientUpdateSha256))){
+            $asset=@($release.assets|Where-Object name -eq $entry[0]);if($asset.Count-ne1-or$asset[0].state-ne'uploaded'){throw 'Uploaded asset missing or incomplete.'}
+            if($asset[0].digest){if($asset[0].digest-ne('sha256:'+$entry[1].ToLowerInvariant())){throw 'GitHub artifact digest mismatch.'}}
+            else{
+              $verify=Join-Path $out 'readback';New-Item -ItemType Directory $verify -Force|Out-Null
+              gh release download $tag --repo $env:GITHUB_REPOSITORY --dir $verify --pattern $entry[0]
+              if($LASTEXITCODE-or(Get-FileHash (Join-Path $verify $entry[0])).Hash-ne$entry[1]){throw 'Uploaded artifact readback mismatch.'}
+            }
+          }
+          gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --prerelease=false --latest --title 'Fresh USA Smart Control 2.0.16' --notes-file $notesFile
+          if($LASTEXITCODE){throw 'Stable release publication failed.'}
+          Write-Output 'PUBLISHED: https://github.com/lerifresh-tech/Fresh-USA-Smart-Control-Download/releases/tag/v2.0.16'
+          Write-Output 'PERMANENT: https://github.com/lerifresh-tech/Fresh-USA-Smart-Control-Download/releases/latest/download/Setup.exe'
