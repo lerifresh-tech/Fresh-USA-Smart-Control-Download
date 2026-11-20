@@ -8,7 +8,7 @@ Official installer downloads for **Fresh USA Smart Control 2.1.0.5**: RFID inven
 - **[Client update — ClientUpdate.exe](https://github.com/lerifresh-tech/Fresh-USA-Smart-Control-Download/releases/latest/download/ClientUpdate.exe)** — for an existing Smart Control installation. Keeps its database, settings and license. Approximately 147 MB. Close Smart Control before updating.
 - **[SHA-256 checksums](https://github.com/lerifresh-tech/Fresh-USA-Smart-Control-Download/releases/latest/download/SHA256SUMS.txt)** and **[validation report](https://github.com/lerifresh-tech/Fresh-USA-Smart-Control-Download/releases/latest/download/VALIDATION.json)**.
 
-Downloads are public and do not require a GitHub account. These `latest/download` addresses remain the same for future stable releases when the same asset names are retained. The previous `latest/download/Setup.exe` link is retained as an identical full-installer compatibility alias. For a specific version, use [Releases](https://github.com/lerifresh-tech/Fresh-USA-Smart-Control-Download/releases).
+Downloads are public and do not require a GitHub account. These `latest/download` addresses remain the same for future stable releases when the same asset names are retained. Each release contains exactly one full installer, named `Smart-Control-Setup.exe`, and the separate `ClientUpdate.exe` update package. No duplicate full-installer aliases are published. For a specific version, use [Releases](https://github.com/lerifresh-tech/Fresh-USA-Smart-Control-Download/releases).
 
 ## Installation and activation
 

@@ -61,20 +61,21 @@ jobs:
               if((Get-FileHash -LiteralPath $dest).Hash -ne $entry[2]){throw 'Installer SHA-256 mismatch.'}
             }
           }finally{$archive.Dispose()}
-          # Preserve previously published permanent Setup.exe links with the same full installer bytes.
-          Copy-Item -LiteralPath (Join-Path $out 'Smart-Control-Setup.exe') -Destination (Join-Path $out 'Setup.exe')
           $notesFile=Join-Path $out 'RELEASE-NOTES.md'
           [IO.File]::WriteAllBytes($notesFile,[Convert]::FromBase64String($env:NOTES_INPUT))
+          $v.PSObject.Properties.Remove('CompatibilityAlias')
+          $v|Add-Member -NotePropertyName InstallerFilename -NotePropertyValue 'Smart-Control-Setup.exe' -Force
           $v.PublicPublication='PUBLISHED_GITHUB_PUBLIC_STABLE_RELEASE'
           $v|ConvertTo-Json -Depth 12|Set-Content -LiteralPath (Join-Path $out 'VALIDATION.json') -Encoding utf8
-          @('Smart-Control-Setup.exe','ClientUpdate.exe','Setup.exe')|ForEach-Object {((Get-FileHash -LiteralPath (Join-Path $out $_)).Hash.ToLowerInvariant()+'  '+$_)}|Set-Content -LiteralPath (Join-Path $out 'SHA256SUMS.txt') -Encoding ascii
+          @('Smart-Control-Setup.exe','ClientUpdate.exe')|ForEach-Object {((Get-FileHash -LiteralPath (Join-Path $out $_)).Hash.ToLowerInvariant()+'  '+$_)}|Set-Content -LiteralPath (Join-Path $out 'SHA256SUMS.txt') -Encoding ascii
           # Recheck the draft immediately before changing its assets; published versions are immutable.
           $release=gh api ('repos/'+$env:GITHUB_REPOSITORY+'/releases/452320596')|ConvertFrom-Json
           if($LASTEXITCODE -or !$release.draft){throw 'Release has already been published.'}
-          gh release upload v2.1.0.5 --repo $env:GITHUB_REPOSITORY --clobber (Join-Path $out 'Smart-Control-Setup.exe') (Join-Path $out 'ClientUpdate.exe') (Join-Path $out 'Setup.exe') (Join-Path $out 'SHA256SUMS.txt') (Join-Path $out 'VALIDATION.json')
+          gh release upload v2.1.0.5 --repo $env:GITHUB_REPOSITORY --clobber (Join-Path $out 'Smart-Control-Setup.exe') (Join-Path $out 'ClientUpdate.exe') (Join-Path $out 'SHA256SUMS.txt') (Join-Path $out 'VALIDATION.json')
           if($LASTEXITCODE){throw 'Asset upload failed; draft remains unpublished.'}
           $release=gh api ('repos/'+$env:GITHUB_REPOSITORY+'/releases/452320596')|ConvertFrom-Json
-          foreach($entry in @(@('Smart-Control-Setup.exe',$fullHash,1408555410),@('ClientUpdate.exe',$updateHash,146931563),@('Setup.exe',$fullHash,1408555410))){
+          if(@($release.assets|Where-Object {$_.name -like '*.exe'}).Count -ne 2){throw 'Publish exactly one full installer and one client update; full-installer aliases are forbidden.'}
+          foreach($entry in @(@('Smart-Control-Setup.exe',$fullHash,1408555410),@('ClientUpdate.exe',$updateHash,146931563))){
             $asset=@($release.assets|Where-Object name -eq $entry[0])
             if($asset.Count -ne 1 -or $asset[0].state -ne 'uploaded' -or $asset[0].size -ne $entry[2] -or $asset[0].digest -ne ('sha256:'+$entry[1])){throw 'Remote asset size/state/digest mismatch.'}
           }
