@@ -1,0 +1,87 @@
+name: Publish verified Smart Control 2.1.0.5
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_url:
+        description: Short-lived URL for the exact verified installer-only artifact
+        required: true
+        type: string
+      validation_base64:
+        description: Exact-source successful Windows installation acceptance report
+        required: true
+        type: string
+      notes_base64:
+        description: Reviewed customer release notes
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: publish-smart-control-2.1.0.5
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ARTIFACT_URL: ${{ inputs.artifact_url }}
+      VALIDATION_INPUT: ${{ inputs.validation_base64 }}
+      NOTES_INPUT: ${{ inputs.notes_base64 }}
+    steps:
+      - name: Verify exact installer bytes and publish normal public Latest release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          Write-Output ('::add-mask::'+$env:ARTIFACT_URL)
+          if($env:GITHUB_REPOSITORY -ne 'lerifresh-tech/Fresh-USA-Smart-Control-Download'){throw 'Wrong distribution repository.'}
+          $v=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:VALIDATION_INPUT)).TrimStart([char]0xfeff)|ConvertFrom-Json
+          if($v.Version -ne '2.1.0.5' -or $v.SourceCommit -ne '34f30aa5ff30a700a42a94e7e61373d948e30bfd' -or $v.CleanFirstInstallation -ne 'PASS' -or $v.Legacy2016Upgrade -ne 'PASS' -or $v.SoftwareAndWpfRegression -ne 'PASS'){throw 'Exact-source successful acceptance is required.'}
+          $fullHash='2fc2f8f0c61e5f731a8961f6b465444ccfbac546a76f76a174fc0548627ca4c8'
+          $updateHash='d2932b0fa9a0a2b890a810faae368e2e67e32888ad90e7df64a020cbe5c5b97d'
+          if($v.InstallerSha256 -ne $fullHash -or $v.ClientUpdateSha256 -ne $updateHash){throw 'Unexpected approved hashes.'}
+          $uri=[Uri]$env:ARTIFACT_URL
+          if($uri.Scheme -ne 'https' -or !($uri.Host.EndsWith('.blob.core.windows.net') -or $uri.Host.EndsWith('.githubusercontent.com'))){throw 'Only signed GitHub Actions artifact storage is allowed.'}
+          $release=gh api ('repos/'+$env:GITHUB_REPOSITORY+'/releases/452320596')|ConvertFrom-Json
+          if($LASTEXITCODE -or !$release.draft -or $release.tag_name -ne 'v2.1.0.5'){throw 'Only the intended unpublished draft may be modified.'}
+          $out=Join-Path $env:RUNNER_TEMP 'verified-public-release'
+          New-Item -ItemType Directory $out|Out-Null
+          $zipPath=Join-Path $out 'candidate.zip'
+          Invoke-WebRequest -Uri $uri -OutFile $zipPath -MaximumRedirection 0 -TimeoutSec 1200
+          $entries=@(
+            @('Fresh_USA_Smart_Control_2.1.0.5_Full_Offline_Setup_x64.exe','Smart-Control-Setup.exe',$fullHash,1408555410),
+            @('Fresh_USA_Smart_Control_2.1.0.5_Client_Update_Setup_x64.exe','ClientUpdate.exe',$updateHash,146931563))
+          $archive=[IO.Compression.ZipFile]::OpenRead($zipPath)
+          try{
+            foreach($entry in $entries){
+              $found=@($archive.Entries|Where-Object Name -eq $entry[0])
+              if($found.Count -ne 1 -or $found[0].Length -ne $entry[3]){throw 'Missing, duplicate or wrong-sized installer entry.'}
+              $dest=Join-Path $out $entry[1]
+              [IO.Compression.ZipFileExtensions]::ExtractToFile($found[0],$dest,$false)
+              if((Get-FileHash -LiteralPath $dest).Hash -ne $entry[2]){throw 'Installer SHA-256 mismatch.'}
+            }
+          }finally{$archive.Dispose()}
+          # Preserve previously published permanent Setup.exe links with the same full installer bytes.
+          Copy-Item -LiteralPath (Join-Path $out 'Smart-Control-Setup.exe') -Destination (Join-Path $out 'Setup.exe')
+          $notesFile=Join-Path $out 'RELEASE-NOTES.md'
+          [IO.File]::WriteAllBytes($notesFile,[Convert]::FromBase64String($env:NOTES_INPUT))
+          $v.PublicPublication='PUBLISHED_GITHUB_PUBLIC_STABLE_RELEASE'
+          $v|ConvertTo-Json -Depth 12|Set-Content -LiteralPath (Join-Path $out 'VALIDATION.json') -Encoding utf8
+          @('Smart-Control-Setup.exe','ClientUpdate.exe','Setup.exe')|ForEach-Object {((Get-FileHash -LiteralPath (Join-Path $out $_)).Hash.ToLowerInvariant()+'  '+$_)}|Set-Content -LiteralPath (Join-Path $out 'SHA256SUMS.txt') -Encoding ascii
+          # Recheck the draft immediately before changing its assets; published versions are immutable.
+          $release=gh api ('repos/'+$env:GITHUB_REPOSITORY+'/releases/452320596')|ConvertFrom-Json
+          if($LASTEXITCODE -or !$release.draft){throw 'Release has already been published.'}
+          gh release upload v2.1.0.5 --repo $env:GITHUB_REPOSITORY --clobber (Join-Path $out 'Smart-Control-Setup.exe') (Join-Path $out 'ClientUpdate.exe') (Join-Path $out 'Setup.exe') (Join-Path $out 'SHA256SUMS.txt') (Join-Path $out 'VALIDATION.json')
+          if($LASTEXITCODE){throw 'Asset upload failed; draft remains unpublished.'}
+          $release=gh api ('repos/'+$env:GITHUB_REPOSITORY+'/releases/452320596')|ConvertFrom-Json
+          foreach($entry in @(@('Smart-Control-Setup.exe',$fullHash,1408555410),@('ClientUpdate.exe',$updateHash,146931563),@('Setup.exe',$fullHash,1408555410))){
+            $asset=@($release.assets|Where-Object name -eq $entry[0])
+            if($asset.Count -ne 1 -or $asset[0].state -ne 'uploaded' -or $asset[0].size -ne $entry[2] -or $asset[0].digest -ne ('sha256:'+$entry[1])){throw 'Remote asset size/state/digest mismatch.'}
+          }
+          foreach($name in @('VALIDATION.json','SHA256SUMS.txt')){if(@($release.assets|Where-Object {$_.name -eq $name -and $_.state -eq 'uploaded'}).Count -ne 1){throw 'Missing public verification metadata.'}}
+          gh release edit v2.1.0.5 --repo $env:GITHUB_REPOSITORY --draft=false --prerelease=false --latest --title 'Fresh USA Smart Control 2.1.0.5' --notes-file $notesFile
+          if($LASTEXITCODE){throw 'Public stable release publication failed.'}
+          $latest=gh api ('repos/'+$env:GITHUB_REPOSITORY+'/releases/latest')|ConvertFrom-Json
+          if($LASTEXITCODE -or $latest.id -ne 452320596 -or $latest.draft -or $latest.prerelease){throw 'Latest public release verification failed.'}
+          Write-Output 'PUBLISHED: https://github.com/lerifresh-tech/Fresh-USA-Smart-Control-Download/releases/tag/v2.1.0.5'
+          Write-Output 'PERMANENT: https://github.com/lerifresh-tech/Fresh-USA-Smart-Control-Download/releases/latest/download/Smart-Control-Setup.exe'
